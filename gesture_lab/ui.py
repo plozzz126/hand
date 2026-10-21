@@ -43,6 +43,7 @@ from PySide6.QtWidgets import (
 from gesture_lab.camera import CameraWorker
 from gesture_lab.config import (
     DEFAULT_CONFIG,
+    DEFAULT_IMAGE,
     EFFECTS,
     GESTURES,
     GIF_DIR,
@@ -122,6 +123,10 @@ class VideoCanvas(QWidget):
         super().__init__()
         self.image = QImage()
         self.gif_frame = QImage()
+        self.photo_frame = QImage()
+        self.photo_timer = QTimer(self)
+        self.photo_timer.setSingleShot(True)
+        self.photo_timer.timeout.connect(self.clear_photo)
         self.demo = False
         self.portal_active = False
         self.overlay_enabled = True
@@ -153,8 +158,22 @@ class VideoCanvas(QWidget):
 
     def play_effect(self, effect):
         self.gif_frame = QImage()
+        self.clear_photo()
         self.overlay.play(effect)
         self.update_overlay()
+
+    def show_photo(self, image, duration_ms=2600):
+        self.photo_frame = image
+        if duration_ms is None:
+            self.photo_timer.stop()
+        else:
+            self.photo_timer.start(duration_ms)
+        self.update()
+
+    def clear_photo(self):
+        self.photo_timer.stop()
+        self.photo_frame = QImage()
+        self.update()
 
     def set_gif_frame(self, frame):
         self.gif_frame = frame
@@ -171,8 +190,8 @@ class VideoCanvas(QWidget):
         outline.addRoundedRect(QRectF(self.rect()), 12, 12)
         painter.setClipPath(outline)
         painter.fillRect(self.rect(), QColor("#080a09"))
+        target = self.image_rect()
         if not self.image.isNull():
-            target = self.image_rect()
             painter.drawImage(target, self.image)
             if not self.gif_frame.isNull() and self.overlay_enabled and not self.portal_active:
                 fitted = self.gif_frame.size().scaled(
@@ -211,6 +230,18 @@ class VideoCanvas(QWidget):
             painter.setFont(QFont("Adwaita Sans", 10))
             text = "Деморежим · эффекты доступны в настройках" if self.demo else "Включи камеру. Всё остальное — движением рук."
             painter.drawText(QRectF(0, title_top + 44, self.width(), 30), Qt.AlignmentFlag.AlignCenter, text)
+        if not self.photo_frame.isNull():
+            fitted = self.photo_frame.size().scaled(
+                QSize(int(target.width() * 0.4), int(target.height() * 0.4)),
+                Qt.AspectRatioMode.KeepAspectRatio,
+            )
+            photo_rect = QRectF(target.right() - fitted.width() - 20,
+                                target.bottom() - fitted.height() - 20,
+                                fitted.width(), fitted.height())
+            painter.setPen(QPen(QColor("#d3edb8"), 2))
+            painter.setBrush(QColor(10, 12, 10, 235))
+            painter.drawRoundedRect(photo_rect.adjusted(-6, -6, 6, 6), 12, 12)
+            painter.drawImage(photo_rect, self.photo_frame)
 
 
 class ScenePanel(QWidget):
@@ -327,6 +358,8 @@ class MainWindow(QMainWindow):
         self.worker = None
         self.closing = False
         self.camera_error = False
+        self.photo_tracks_gesture = False
+        self.photo_release_since = None
         self.demo = demo
         self.gate = GestureGate()
         self.scene = ScenePanel(self)
@@ -342,9 +375,11 @@ class MainWindow(QMainWindow):
         self.poller.setInterval(30)
         self.poller.timeout.connect(self.poll_camera)
         self.poller.start()
-        for index, gesture in enumerate(GESTURES):
+        for index, gesture in enumerate(list(GESTURES)[:10]):
             QShortcut(QKeySequence(str((index + 1) % 10)), self,
                       activated=lambda selected=gesture: self.trigger(selected, manual=True))
+        QShortcut(QKeySequence("M"), self,
+                  activated=lambda: self.trigger("Middle_Finger", manual=True))
         QShortcut(QKeySequence("Ctrl+Space"), self, activated=self.toggle_camera)
         QShortcut(QKeySequence("F11"), self, activated=self.toggle_fullscreen)
         QShortcut(QKeySequence("Escape"), self,
@@ -483,8 +518,9 @@ class MainWindow(QMainWindow):
         self.gesture_list = QListWidget()
         self.gesture_list.setMinimumHeight(255)
         self.gesture_list.setMaximumHeight(300)
-        for index, details in enumerate(GESTURES.values()):
-            self.gesture_list.addItem(f"{(index + 1) % 10}    {details[0]}")
+        for index, (gesture, details) in enumerate(GESTURES.items()):
+            shortcut = "M" if gesture == "Middle_Finger" else str((index + 1) % 10)
+            self.gesture_list.addItem(f"{shortcut}    {details[0]}")
         self.gesture_list.currentRowChanged.connect(self.select_gesture)
         binding_layout.addWidget(self.gesture_list)
         self.hint_label = label("", "muted")
@@ -494,6 +530,7 @@ class MainWindow(QMainWindow):
         for key, name in EFFECTS.items():
             self.effect_combo.addItem(name, key)
         self.effect_combo.addItem("Своя GIF", "gif")
+        self.effect_combo.addItem("Фото поверх камеры", "image")
         self.effect_combo.currentIndexChanged.connect(self.change_effect)
         binding_layout.addWidget(self.effect_combo)
         self.binding_label = label("", "muted")
@@ -582,18 +619,27 @@ class MainWindow(QMainWindow):
         gesture = self.selected_gesture()
         self.hint_label.setText(GESTURES[gesture][1])
         binding = self.config["bindings"][gesture]
-        value = "gif" if binding["type"] == "gif" else binding["value"]
+        value = binding["type"] if binding["type"] in ("gif", "image") else binding["value"]
         self.effect_combo.blockSignals(True)
         self.effect_combo.setCurrentIndex(self.effect_combo.findData(value))
         self.effect_combo.blockSignals(False)
-        self.binding_label.setText(Path(binding["value"]).name if binding["type"] == "gif"
-                                   else "Встроенная анимация · можно заменить на GIF")
+        if binding["type"] in ("gif", "image"):
+            self.binding_label.setText(Path(binding["value"]).name)
+        else:
+            self.binding_label.setText("Встроенная анимация · можно заменить на GIF или фото")
 
     def change_effect(self, index):
         effect = self.effect_combo.itemData(index)
         if effect == "gif":
             self.choose_gif()
             self.select_gesture(self.gesture_list.currentRow())
+            return
+        if effect == "image":
+            self.config["bindings"][self.selected_gesture()] = {
+                "type": "image", "value": DEFAULT_IMAGE,
+            }
+            self.select_gesture(self.gesture_list.currentRow())
+            self.saver.start()
             return
         self.config["bindings"][self.selected_gesture()] = {"type": "effect", "value": effect}
         self.select_gesture(self.gesture_list.currentRow())
@@ -692,6 +738,9 @@ class MainWindow(QMainWindow):
         self.camera_tuning.setEnabled(True)
         self.gpu_acceleration.setEnabled(True)
         self.video.image = QImage()
+        self.video.clear_photo()
+        self.photo_tracks_gesture = False
+        self.photo_release_since = None
         self.video.portal_active = False
         self.video.update_overlay()
         self.fps_label.setText("— FPS")
@@ -714,6 +763,9 @@ class MainWindow(QMainWindow):
         if time.monotonic() - packet.timestamp > 0.4:
             self.gate.reset()
             self.progress.setValue(0)
+            self.video.clear_photo()
+            self.photo_tracks_gesture = False
+            self.photo_release_since = None
             self.video.portal_active = False
             self.video.update_overlay()
             return
@@ -724,6 +776,7 @@ class MainWindow(QMainWindow):
         self.fps_label.setText(f"{packet.image.width()} × {packet.image.height()} · {packet.fps:.0f} FPS")
         self.fps_label.setToolTip(f"Распознавание: {packet.backend}. FPS измерен по готовым обработанным кадрам.")
         observation = packet.observation
+        self.update_photo_release(observation, packet.timestamp)
         if packet.contact_changed:
             self.log("Фигура включена — разведи руки и растягивай её."
                      if packet.portal_enabled else "Фигура выключена — повтори касание для включения.")
@@ -733,7 +786,11 @@ class MainWindow(QMainWindow):
             self.gate.reset()
             self.progress.setValue(round(portal_stretch(packet.portal) * 100))
             return
-        if packet.contact_progress > 0 or not self.overlay_checkbox.isChecked():
+        image_action = (
+            observation.gesture in self.config["bindings"]
+            and self.config["bindings"][observation.gesture]["type"] == "image"
+        )
+        if packet.contact_progress > 0 or (not self.overlay_checkbox.isChecked() and not image_action):
             if packet.contact_progress >= 1:
                 self.gesture_label.setText("Фигура включена" if packet.portal_enabled else "Фигура выключена")
                 self.score_label.setText("Касание принято · разведи руки")
@@ -759,15 +816,49 @@ class MainWindow(QMainWindow):
         if triggered:
             self.trigger(triggered)
 
+    def update_photo_release(self, observation, timestamp):
+        if not self.photo_tracks_gesture:
+            return
+        if self.video.photo_frame.isNull():
+            self.photo_tracks_gesture = False
+            self.photo_release_since = None
+            return
+        gesture = observation.gesture
+        image_action = (
+            gesture in self.config["bindings"]
+            and self.config["bindings"][gesture]["type"] == "image"
+        )
+        if image_action:
+            self.photo_release_since = None
+        elif self.photo_release_since is None:
+            self.photo_release_since = timestamp
+        elif timestamp - self.photo_release_since >= 0.12:
+            self.video.clear_photo()
+            self.photo_tracks_gesture = False
+            self.photo_release_since = None
+
     def trigger(self, gesture, manual=False):
-        if not self.overlay_checkbox.isChecked():
+        binding = self.config["bindings"][gesture]
+        if not self.overlay_checkbox.isChecked() and binding["type"] != "image":
             if manual:
                 self.log("GIF и обычные эффекты отключены. Включить их можно в настройках.")
             return
         try:
-            binding = self.config["bindings"][gesture]
-            self.scene.play(gesture, binding)
-            description = "GIF" if binding["type"] == "gif" else EFFECTS[binding["value"]]
+            if binding["type"] == "image":
+                path = resolve_asset(binding["value"])
+                image = QImage(str(path))
+                if image.isNull():
+                    raise ValueError(f"Фото не найдено или повреждено: {path}")
+                self.scene.stop_movie()
+                self.scene.effect.play("clear")
+                self.video.play_effect("clear")
+                self.video.show_photo(image, duration_ms=2600 if manual else None)
+                self.photo_tracks_gesture = not manual
+                self.photo_release_since = None
+                description = f"Фото · {path.name}"
+            else:
+                self.scene.play(gesture, binding)
+                description = "GIF" if binding["type"] == "gif" else EFFECTS[binding["value"]]
             self.log(f"{'Проверка' if manual else 'Жест'}: {GESTURES[gesture][0]} → {description}")
         except (OSError, ValueError) as error:
             self.log(str(error))

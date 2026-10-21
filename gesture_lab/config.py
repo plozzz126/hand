@@ -9,6 +9,7 @@ ROOT = Path(__file__).resolve().parent.parent
 CONFIG_PATH = ROOT / "config.json"
 MODEL_PATH = ROOT / "models" / "gesture_recognizer.task"
 GIF_DIR = ROOT / "assets" / "gifs"
+DEFAULT_IMAGE = "assets/images/middle_finger.jpg"
 
 GESTURES = {
     "Open_Palm": ("Ладонь", "Раскрой все пять пальцев", "portal"),
@@ -21,6 +22,7 @@ GESTURES = {
     "Pinch": ("Щипок", "Соедини большой и указательный; остальные раскрой", "pulse"),
     "Swipe_Left": ("Взмах влево", "Быстро сдвинь открытую ладонь влево", "rain"),
     "Swipe_Right": ("Взмах вправо", "Быстро сдвинь открытую ладонь вправо", "confetti"),
+    "Middle_Finger": ("Средний палец", "Подними средний, остальные пальцы согни", "image"),
 }
 
 EFFECTS = {
@@ -43,7 +45,8 @@ DEFAULT_CONFIG = {
     "hold_ms": 350,
     "cooldown_ms": 1000,
     "bindings": {
-        gesture: {"type": "effect", "value": details[2]}
+        gesture: ({"type": "image", "value": DEFAULT_IMAGE} if details[2] == "image"
+                  else {"type": "effect", "value": details[2]})
         for gesture, details in GESTURES.items()
     },
 }
@@ -86,6 +89,7 @@ def validate_config(data):
         if not isinstance(value, str) or not (
             (action_type == "effect" and value in EFFECTS)
             or (action_type == "gif" and value.strip())
+            or (action_type == "image" and value.strip())
         ):
             raise ValueError(f"Некорректное действие для {gesture}")
         result["bindings"][gesture] = {"type": action_type, "value": value}

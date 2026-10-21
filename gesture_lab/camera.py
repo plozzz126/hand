@@ -8,7 +8,7 @@ from PySide6.QtGui import QImage
 
 from gesture_lab.activation import ContactToggle
 from gesture_lab.camera_controls import apply_camera_profile
-from gesture_lab.gestures import Observation, SwipeDetector, is_pinch
+from gesture_lab.gestures import Observation, SwipeDetector, is_middle_finger, is_pinch
 from gesture_lab.model import ensure_model
 from gesture_lab.portal import PortalState, PortalTracker, render_portal
 from gesture_lab.recognition import RecognitionPipeline, create_recognizer
@@ -136,6 +136,9 @@ class CameraWorker(QThread):
                             gesture = None
                     if is_pinch(landmarks):
                         gesture, confidence = "Pinch", 1.0
+                    elif any(is_middle_finger(tracked.landmarks, tracked.world_landmarks)
+                             for tracked in tracked_hands):
+                        gesture, confidence = "Middle_Finger", 1.0
                     motion = swipe.update(landmarks, gesture, confidence, hand, timestamp)
                     height, width = rgb.shape[:2]
                     hand_points = [tracked.landmarks for tracked in tracked_hands]

@@ -1,6 +1,6 @@
 from collections import deque
 from dataclasses import dataclass
-from math import dist
+from math import acos, degrees, dist
 
 
 @dataclass(frozen=True)
@@ -77,6 +77,38 @@ def is_pinch(landmarks):
         for tip, joint in ((12, 10), (16, 14), (20, 18))
     )
     return dist(points[4], points[8]) / palm_size < 0.30 and open_fingers >= 2
+
+
+def _joint_angle(landmarks, first, joint, last):
+    origin = landmarks[joint]
+    first_vector = (landmarks[first].x - origin.x,
+                    landmarks[first].y - origin.y,
+                    landmarks[first].z - origin.z)
+    last_vector = (landmarks[last].x - origin.x,
+                   landmarks[last].y - origin.y,
+                   landmarks[last].z - origin.z)
+    first_length = sum(value * value for value in first_vector) ** 0.5
+    last_length = sum(value * value for value in last_vector) ** 0.5
+    if first_length < 1e-6 or last_length < 1e-6:
+        return 0.0
+    cosine = sum(left * right for left, right in zip(first_vector, last_vector, strict=True))
+    cosine /= first_length * last_length
+    return degrees(acos(max(-1.0, min(1.0, cosine))))
+
+
+def is_middle_finger(landmarks, world_landmarks=()):
+    if len(landmarks) != 21:
+        return False
+    points = world_landmarks if len(world_landmarks) == 21 else landmarks
+    middle_extended = (
+        _joint_angle(points, 9, 10, 11) >= 150
+        and _joint_angle(points, 10, 11, 12) >= 145
+    )
+    other_fingers_folded = all(
+        _joint_angle(points, base, joint, tip) < 145
+        for base, joint, tip in ((5, 6, 7), (13, 14, 15), (17, 18, 19))
+    )
+    return middle_extended and other_fingers_folded
 
 
 class SwipeDetector:
